@@ -3,6 +3,28 @@ from pygame import Vector2
 from pygame import Rect
 import math
 
+class Command:
+    def run(self):
+        raise NotImplementedError()
+
+class MoveCommand(Command):
+    def __init__(self, game_state, unit, delta):
+        self.game_state = game_state
+        self.unit = unit
+        self.delta = delta
+
+    def run(self):
+        self.unit.angle += self.delta
+        angle_in_radians = math.radians(self.unit.angle)
+        move_vector = Vector2(math.cos(angle_in_radians), -math.sin(angle_in_radians))
+        if move_vector.y > 0: move_vector.y *= self.game_state.downward_bias
+        else: move_vector.y *= self.game_state.upward_bias
+        self.unit.position += move_vector * self.unit.velocity
+        
+        if self.unit.position.x > (self.game_state.world_size.x + self.game_state.margin) or (self.unit.position.x < -self.game_state.margin) \
+        or self.unit.position.y < -self.game_state.margin:
+            self.unit.angle = (self.unit.angle + 180) % 360
+
 
 class Unit:
     def __init__(self, game_state, position, tile, angle):
@@ -18,19 +40,6 @@ class Plane(Unit):
     def __init__(self, game_state, position, tile, angle):
         super().__init__(game_state, position, tile, angle)
         self.velocity = 0.09
-
-    def move(self, delta):
-        self.angle += delta
-        angle_in_radians = math.radians(self.angle)
-        move_vector = Vector2(math.cos(angle_in_radians), -math.sin(angle_in_radians))
-        if move_vector.y > 0: move_vector.y *= self.game_state.downward_bias
-        else: move_vector.y *= self.game_state.upward_bias
-        self.position += move_vector * self.velocity
-        
-        if self.position.x > (self.game_state.world_size.x + self.game_state.margin) or (self.position.x < -self.game_state.margin) \
-        or self.position.y < -self.game_state.margin:
-            self.angle = (self.angle + 180) % 360 
-
 
 class Layer:
     def __init__(self, user_interface, tileset):
@@ -71,15 +80,10 @@ class UnitsLayer(Layer):
 class GameState:
     def __init__(self):
         self.world_size = Vector2(15, 35)
-        self.units = [Plane(self, Vector2(5, 4), Vector2(0, 0), 0), Plane(self, Vector2(5, 5), Vector2(0, 0), 0)]
-        self.downward_bias = 2.25  # Faster downward motion
-        self.upward_bias = 1.5    # Slightly faster upward motion
+        self.units = [Plane(self, Vector2(5, 4), Vector2(0, 0), 0), Plane(self, Vector2(5, 7), Vector2(0, 0), 0), Plane(self, Vector2(5, 10), Vector2(0, 0), 0)]
+        self.downward_bias = 2  # faster downward motion
+        self.upward_bias = 1.5    # slower upward motion
         self.margin = 2
-
-    def update(self, delta):
-        for unit in self.units:
-            unit.move(delta)
-
 
 class UserInterface:
     def __init__(self):
@@ -87,12 +91,14 @@ class UserInterface:
 
         self.game_state = GameState()
         self.cell_size = Vector2(35, 15)
-        self.delta = 0
-
+        
         window_size = self.game_state.world_size.elementwise() *  self.cell_size
         self.window = pygame.display.set_mode((int(window_size.x), int(window_size.y)))
-
         self.layers = [UnitsLayer(self, "assets/image.png", self.game_state, self.game_state.units)]
+
+        self.commands = []
+        self.player_unit = self.game_state.units[0]
+        self.delta = 0
 
         pygame.display.set_caption("Dogfight")
         self.clock = pygame.time.Clock()
@@ -113,9 +119,14 @@ class UserInterface:
             elif event.type == pygame.KEYUP:
                 if event.key in (pygame.K_UP, pygame.K_DOWN):
                     self.delta = 0
+            
+        command = MoveCommand(self.game_state, self.player_unit, self.delta)
+        self.commands.append(command)
                 
     def update(self):
-        self.game_state.update(self.delta)
+        for command in self.commands:
+            command.run()
+        self.commands.clear()
 
     def render(self):
         self.window.fill((0, 0, 0))
