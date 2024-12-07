@@ -17,12 +17,12 @@ class MoveCommand(Command):
         self.unit.angle = (self.unit.angle + self.delta) % 360
         angle_in_radians = math.radians(self.unit.angle)
         move_vector = Vector2(math.cos(angle_in_radians), -math.sin(angle_in_radians))
-        if move_vector.y > 0: move_vector.y *= self.game_state.downward_bias
-        else: move_vector.y *= self.game_state.upward_bias
         self.unit.position += move_vector * self.unit.velocity
         
-        if self.unit.position.x > (self.game_state.world_size.x + self.game_state.margin) or (self.unit.position.x < -self.game_state.margin) \
-        or self.unit.position.y < -self.game_state.margin:
+        # Boundary condition handling
+        if self.unit.position.x > (self.game_state.world_size.x + self.game_state.margin) or \
+        self.unit.position.x < -self.game_state.margin or \
+        self.unit.position.y < -self.game_state.margin:
             self.unit.angle = (self.unit.angle + 180) % 360
 
 class ShootCommand(Command):
@@ -139,7 +139,6 @@ class UnitsLayer(Layer):
         for unit in self.units:
             self.draw_tile(surface, unit.position, unit.tile, unit.angle)
 
-
 class BulletsLayer(Layer):
     def __init__(self, user_interface, image_file, game_state, bullets):
         super().__init__(user_interface, image_file)
@@ -157,8 +156,6 @@ class GameState:
         self.epoch = 0
         self.world_size = Vector2(30, 70)
         self.units = [Plane(self, Vector2(5, 4), Vector2(0, 0), 0)]
-        self.downward_bias = 1.75  # faster downward motion
-        self.upward_bias = 1.5    # slower upward motion
         self.margin = 2 # outer bound for sprites moving out of world
 
         self.bullets = []
@@ -193,7 +190,7 @@ class UserInterface:
         
         window_size = self.game_state.world_size.elementwise() *  self.cell_size
         self.window = pygame.display.set_mode((int(window_size.x), int(window_size.y)))
-        self.layers = [UnitsLayer(self, "assets/plane_4.png", self.game_state, self.game_state.units), BulletsLayer(self, "assets/red_ball.png", self.game_state, self.game_state.bullets)]
+        self.layers = [UnitsLayer(self, "assets/plane.png", self.game_state, self.game_state.units), BulletsLayer(self, "assets/red_ball.png", self.game_state, self.game_state.bullets)]
 
         self.commands = []
         self.player_unit = self.game_state.units[0]
