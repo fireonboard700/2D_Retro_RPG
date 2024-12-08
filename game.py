@@ -19,7 +19,6 @@ class MoveCommand(Command):
         move_vector = Vector2(math.cos(angle_in_radians), -math.sin(angle_in_radians))
         self.unit.position += move_vector * self.unit.velocity
         
-        # Boundary condition handling
         if self.unit.position.x > (self.game_state.world_size.x + self.game_state.margin) or \
         self.unit.position.x < -self.game_state.margin or \
         self.unit.position.y < -self.game_state.margin:
@@ -43,11 +42,11 @@ class MoveBulletCommand(Command):
     def __init__(self, game_state, bullet):
         self.game_state = game_state
         self.bullet = bullet
-    
     def run(self):
+    
         new_bullet_position = self.bullet.position + self.game_state.bullet_speed * self.bullet.direction
 
-        if not self.game_state.is_inside(new_bullet_position):
+        if not self.game_state.is_inside_world(new_bullet_position):
             self.bullet.health = 0
             return
         
@@ -55,15 +54,13 @@ class MoveBulletCommand(Command):
             self.bullet.health = 0
             return
         
-        unit = self.game_state.find_live_unit(new_bullet_position)
+        unit = self.game_state.check_unit_collision(new_bullet_position)
         if  unit is not None and unit != self.bullet.unit:
             self.bullet.health = 0
             unit.health = 0
             return
         
         self.bullet.position = new_bullet_position
-        print(f"bullet at {self.bullet.position}")
-
 class DeleteDestroyedCommand(Command):
     def __init__(self, item_list):
         self.item_list = item_list
@@ -84,7 +81,7 @@ class GameUnit:
 class Plane(GameUnit):
     def __init__(self, game_state, position, tile, angle):
         super().__init__(game_state, position, tile, angle)
-        self.velocity = 0.09
+        self.velocity = 0.1
         self.weapon_target = Vector2(0,0)
         self.last_bullet_epoch = 0
 
@@ -97,13 +94,7 @@ class Bullet(GameUnit):
  
         angle_in_radians = math.radians(self.unit.angle)
         self.direction = Vector2(math.cos(angle_in_radians), -math.sin(angle_in_radians)).normalize()
-
-        # Adjust start position to be at the front of the plane
-        # Use the unit's velocity to scale the offset
-        self.start_position = unit.position + self.direction * self.unit.velocity * 3
-
-        # Set the bullet's position to the start position
-        self.position = self.start_position
+        self.start_position = unit.position
 
 class Layer:
     def __init__(self, user_interface, tileset):
@@ -154,8 +145,8 @@ class BulletsLayer(Layer):
 class GameState:
     def __init__(self):
         self.epoch = 0
-        self.world_size = Vector2(30, 70)
-        self.units = [Plane(self, Vector2(5, 4), Vector2(0, 0), 0)]
+        self.world_size = Vector2(32, 32)
+        self.units = [Plane(self, Vector2(5, 4), Vector2(0, 0), 0), Plane(self, Vector2(5, 6), Vector2(0, 0), 0), Plane(self, Vector2(5, 8), Vector2(0, 0), 0)]
         self.margin = 2 # outer bound for sprites moving out of world
 
         self.bullets = []
@@ -163,34 +154,32 @@ class GameState:
         self.bullet_range = 15
         self.bullet_delay = 15
 
-    def is_inside(self, position):
-        return 0 <= position.x < self.world_size.x and  0 <= position.y < self.world_size.y
+    def is_inside_world(self, position):
+        return 0 <= position.x < self.world_size.x and 0 <= position.y < self.world_size.y
     
-    def find_unit(self, position):
+    def check_unit_collision(self, position: Vector2):
         for unit in self.units:
-            if int(unit.position.x) == int(position.x) and int(unit.position.y) == int(position.y):
+            if unit.health == 0:
+                continue
+
+            distance = position.distance_to(unit.position)
+            collision_radius = 1 
+
+            if distance < collision_radius:
                 return unit
-        
+                
         return None
-    
-    def find_live_unit(self, position):
-        unit = self.find_unit(position)
-
-        if unit is None or unit.health == 0:
-            return None
-
-        return unit
 
 class UserInterface:
     def __init__(self):
         pygame.init()
 
         self.game_state = GameState()
-        self.cell_size = Vector2(35, 25)
+        self.cell_size = Vector2(32, 32)
         
         window_size = self.game_state.world_size.elementwise() *  self.cell_size
         self.window = pygame.display.set_mode((int(window_size.x), int(window_size.y)))
-        self.layers = [UnitsLayer(self, "assets/plane.png", self.game_state, self.game_state.units), BulletsLayer(self, "assets/red_ball.png", self.game_state, self.game_state.bullets)]
+        self.layers = [UnitsLayer(self, "assets/simple.png", self.game_state, self.game_state.units), BulletsLayer(self, "assets/simple.png", self.game_state, self.game_state.bullets)]
 
         self.commands = []
         self.player_unit = self.game_state.units[0]
@@ -226,6 +215,7 @@ class UserInterface:
             self.commands.append(MoveBulletCommand(self.game_state, bullet))
 
         self.commands.append(DeleteDestroyedCommand(self.game_state.bullets))
+        self.commands.append(DeleteDestroyedCommand(self.game_state.units))
                 
     def update(self):
         for command in self.commands:
