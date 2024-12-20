@@ -3,6 +3,7 @@ from pygame import Vector2
 from pygame import Rect
 import math
 import random 
+import heapq  
 
 class Command:
     def run(self):
@@ -106,6 +107,16 @@ class MoveBulletCommand(Command):
         self.bullet.position = new_bullet_position
         self.bullet.update()
 
+class MoveEnemiesCommand(Command):
+    def __init__(self, game_state):
+        self.game_state = game_state
+    
+    def run(self):
+        for unit in self.game_state.units:
+            if isinstance(unit, Enemy):
+                unit.update_path(self.game_state.player_unit.position)
+                unit.move_along_path()
+
 class UpdateParticlesCommand(Command):
     def __init__(self, particles):
         self.particles = particles
@@ -136,6 +147,77 @@ class Player(GameUnit):
         self.last_bullet_epoch = 0 
         self.orientation = Vector2(1, 0)
         self.is_moving = False    
+
+class Enemy(Player): 
+    def __init__(self, game_state, position):
+        super().__init__(game_state, position, Vector2(2, 2))
+        self.velocity = 0.05
+        self.path = []
+        self.path_update_delay = 30
+        self.last_path_update = 0
+    
+    def update_path(self, target_pos):
+        if self.game_state.epoch - self.last_path_update < self.path_update_delay:
+            return
+            
+        self.last_path_update = self.game_state.epoch
+        self.path = self.find_path(self.position, target_pos)
+    
+    def find_path(self, start, end):
+        def heuristic(a, b):
+            return abs(a[0] - b[0]) + abs(a[1] - b[1])
+        
+        start_pos = (int(start.x), int(start.y))
+        end_pos = (int(end.x), int(end.y))
+        
+        frontier = [(0, start_pos)]
+        came_from = {start_pos: None}
+        cost_so_far = {start_pos: 0}
+        
+        while frontier:
+            _, current = heapq.heappop(frontier)
+            
+            if current == end_pos:
+                break
+                
+            for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]: 
+                next_pos = (current[0] + dx, current[1] + dy)
+                
+                if (0 <= next_pos[0] < self.game_state.world_size.x and 
+                    0 <= next_pos[1] < self.game_state.world_size.y):
+                    new_cost = cost_so_far[current] + 1
+                    
+                    if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
+                        cost_so_far[next_pos] = new_cost
+                        priority = new_cost + heuristic(end_pos, next_pos)
+                        heapq.heappush(frontier, (priority, next_pos))
+                        came_from[next_pos] = current
+        
+        path = []
+        current = end_pos
+        while current != start_pos:
+            if current not in came_from:
+                return [] 
+            path.append(Vector2(current[0], current[1]))
+            current = came_from[current]
+        path.reverse()
+        return path
+    
+    def move_along_path(self):
+        if not self.path:
+            return
+            
+        target = self.path[0]
+        direction = target - self.position
+        
+        if direction.length() < self.velocity:
+            self.position = target
+            self.path.pop(0)
+        else:
+            self.is_moving = True
+            normalized_dir = direction.normalize()
+            self.position += normalized_dir * self.velocity
+            self.orientation = normalized_dir
 class SimpleParticle(GameUnit):
     def __init__(self, game_state, position, velocity, lifetime):
         super().__init__(game_state, position, Vector2(0, 0))
@@ -162,7 +244,7 @@ class Fireball(GameUnit):
         self.unit = unit
         self.direction = direction
         self.start_position = unit.position.copy()
-        self.velocity = 0.3
+        self.velocity = 0.5
         self.range = 15
         self.damage = 25
         
@@ -236,6 +318,29 @@ class Layer(GameStateObserver):
     def render(self, surface):
         raise NotImplementedError()
 
+class TileMapLayer(Layer):
+    def __init__(self, user_interface, tileset, game_state):
+        super().__init__(user_interface, tileset)
+        self.game_state = game_state
+        self.tile_map = [
+            [Vector2(0, 0) for _ in range(int(game_state.world_size.x))]
+            for _ in range(int(game_state.world_size.y))
+        ]
+        self.generate_simple_map()
+    
+    def generate_simple_map(self):
+        for y in range(len(self.tile_map)):
+            for x in range(len(self.tile_map[0])):
+                if random.random() < 0.1:  # 10% chance for variant
+                    self.tile_map[y][x] = Vector2(1, 0)  # Variant floor tile
+                else:
+                    self.tile_map[y][x] = Vector2(0, 0)  # Basic floor tile
+    
+    def render(self, surface):
+        for y in range(len(self.tile_map)):
+            for x in range(len(self.tile_map[0])):
+                self.draw_tile(surface, Vector2(x, y), self.tile_map[y][x])
+
 class UnitsLayer(Layer):
     def __init__(self, user_interface, tileset, game_state, units):
         super().__init__(user_interface, tileset)
@@ -251,10 +356,11 @@ class UnitsLayer(Layer):
         
     def get_unit_tile(self, unit):
         tile = unit.tile.copy()
+        base_row = 2 if isinstance(unit, Enemy) else 0
         
         if unit.is_moving:
             frame = (self.game_state.epoch // self.frame_switch_threshold) % 2
-            tile.y = frame  
+            tile.y = base_row + frame  
         
         # Column 0: Right-facing sprites
         # Column 1: Left-facing sprites
@@ -302,11 +408,11 @@ class GameState:
     def __init__(self):
         self.epoch = 0
         self.world_size = Vector2(16, 16)
+        self.player_unit = Player(self, Vector2(5, 4), Vector2(2, 0))
         self.units = [
-            Player(self, Vector2(5, 4), Vector2(2, 0)),
-            Player(self, Vector2(5, 6), Vector2(2, 0)),
-            Player(self, Vector2(5, 8), Vector2(2, 0)),
-            Player(self, Vector2(5, 10), Vector2(2, 0))
+            self.player_unit,
+            Enemy(self, Vector2(14, 14)),  
+            Enemy(self, Vector2(2, 14)),   
         ]
         self.bullet_delay = 15
         self.bullets = []
@@ -349,6 +455,7 @@ class UserInterface:
         window_size = self.game_state.world_size.elementwise() *  self.cell_size
         self.window = pygame.display.set_mode((int(window_size.x), int(window_size.y)))
         self.layers = [
+                    TileMapLayer(self, "assets/tiles.png", self.game_state),    
                     UnitsLayer(self, "assets/player_sprites.png", self.game_state, self.game_state.units),
                     BulletsLayer(self, "assets/fireball.png", self.game_state, self.game_state.bullets),
                     ParticlesLayer(self, "assets/particle.png", self.game_state),  # Add particles layer
@@ -389,6 +496,7 @@ class UserInterface:
                 
         command = MoveUnitCommand(self.game_state, self.player_unit, direction)
         self.commands.append(command)
+        self.commands.append(MoveEnemiesCommand(self.game_state))
 
         for bullet in self.game_state.bullets:
             self.commands.append(MoveBulletCommand(self.game_state, bullet))
