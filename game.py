@@ -2,12 +2,13 @@ import pygame
 from pygame import Vector2
 from pygame import Rect
 import math
+import random 
 
 class Command:
     def run(self):
         raise NotImplementedError()
 
-class MoveCommand(Command):
+class MoveUnitCommand(Command):
     def __init__(self, game_state, unit, direction):  
         self.game_state = game_state
         self.unit = unit
@@ -27,10 +28,11 @@ class MoveCommand(Command):
             self.game_state.notify_unit_stop(self.unit)
             
 class ShootCommand(Command):
-    def __init__(self, game_state, unit, direction):
+    def __init__(self, game_state, unit, direction, bullet_type):
         self.game_state = game_state    
         self.unit = unit
         self.direction = direction
+        self.bullet_type = bullet_type
     
     def run(self):
         if self.unit.health == 0:
@@ -39,32 +41,80 @@ class ShootCommand(Command):
             return
         
         self.unit.last_bullet_epoch = self.game_state.epoch
-        self.game_state.bullets.append(Bullet(self.game_state, self.unit, self.unit.orientation))
+        
+        if self.bullet_type == "fireball":
+            projectile = Fireball(self.game_state, self.unit, self.unit.orientation)
+            self.game_state.bullets.append(projectile)
 
 class MoveBulletCommand(Command):
     def __init__(self, game_state, bullet):
         self.game_state = game_state
         self.bullet = bullet
+        
+    def handle_collision(self, unit):
+        unit.health -= self.bullet.damage
+        
+        knockback_strength = 0.5
+        knockback_direction = self.bullet.direction.normalize()
+        unit.position += knockback_direction * knockback_strength
+        unit.position.x = max(0, min(unit.position.x, self.game_state.world_size.x - 1))
+        unit.position.y = max(0, min(unit.position.y, self.game_state.world_size.y - 1))
+        
+        self.bullet.health = 0
+
     def run(self):
-    
         new_bullet_position = self.bullet.position + self.bullet.direction * self.bullet.velocity
 
         if not self.game_state.is_inside_world(new_bullet_position):
+            self.bullet.create_impact_particles()
             self.bullet.health = 0
             return
         
         if new_bullet_position.distance_to(self.bullet.start_position) >= self.bullet.range:
+            self.bullet.create_impact_particles()
             self.bullet.health = 0
             return
         
         unit = self.game_state.check_unit_collision(new_bullet_position)
         if unit is not None and unit != self.bullet.unit:
-            self.bullet.health = 0
-            unit.health = 0
+            self.bullet.create_impact_particles()
+            self.handle_collision(unit)
             return
         
         self.bullet.position = new_bullet_position
-class DeleteDestroyedCommand(Command):
+        self.bullet.update()
+
+    def run(self):
+        new_bullet_position = self.bullet.position + self.bullet.direction * self.bullet.velocity
+
+        if not self.game_state.is_inside_world(new_bullet_position):
+            self.bullet.create_impact_particles()
+            self.bullet.health = 0
+            return
+        
+        if new_bullet_position.distance_to(self.bullet.start_position) >= self.bullet.range:
+            self.bullet.create_impact_particles()
+            self.bullet.health = 0
+            return
+        
+        unit = self.game_state.check_unit_collision(new_bullet_position)
+        if unit is not None and unit != self.bullet.unit:
+            self.bullet.create_impact_particles()
+            self.handle_collision(unit)
+            return
+        
+        self.bullet.position = new_bullet_position
+        self.bullet.update()
+
+class UpdateParticlesCommand(Command):
+    def __init__(self, particles):
+        self.particles = particles
+    
+    def run(self):
+        for particle in self.particles:
+            if particle.lifetime > 0:
+                particle.update()
+class DeleteDestroyedUnitsCommand(Command):
     def __init__(self, item_list):
         self.item_list = item_list
     
@@ -86,15 +136,84 @@ class Player(GameUnit):
         self.last_bullet_epoch = 0 
         self.orientation = Vector2(1, 0)
         self.is_moving = False    
-
-class Bullet(GameUnit):
+class SimpleParticle(GameUnit):
+    def __init__(self, game_state, position, velocity, lifetime):
+        super().__init__(game_state, position, Vector2(0, 0))
+        self.lifetime = lifetime
+        self.tile = Vector2(0, 0)
+        self.next_move_time = random.randint(0, 10)  
+        self.moves = [
+                Vector2(0, -0.1),    # Up
+                Vector2(0.1, 0),     # Right
+            ]
+        self.move_interval = 12  
+        
+    def update(self):
+        self.lifetime -= 1
+        if self.game_state.epoch >= self.next_move_time:
+            
+            move = random.choice(self.moves)
+            self.position += move
+            self.next_move_time = self.game_state.epoch + self.move_interval + random.randint(-2, 2)
+    
+class Fireball(GameUnit):
     def __init__(self, game_state, unit, direction):
-        super().__init__(game_state, unit.position, Vector2(0, 0))
+        super().__init__(game_state, unit.position, Vector2(0, 1))
         self.unit = unit
         self.direction = direction
         self.start_position = unit.position.copy()
-        self.velocity = 0.4
-        self.range = 20
+        self.velocity = 0.3
+        self.range = 15
+        self.damage = 25
+        
+        self.animation_frames = [Vector2(0, 0), Vector2(0, 1), Vector2(0, 2)]
+        self.current_frame = 0
+        self.animation_speed = 10
+        self.tile = self.animation_frames[self.current_frame]
+    
+    def create_impact_particles(self):
+        for _ in range(25):
+            spread = 0.3
+            position = self.position + Vector2(
+                random.uniform(-spread, spread),
+                random.uniform(-spread, spread)
+            )
+            velocity = Vector2(
+                random.uniform(-0.08, 0.08),
+                random.uniform(-0.08, 0.08)
+            )
+            particle = SimpleParticle(
+                self.game_state,
+                position,
+                velocity,
+                lifetime=random.randint(100, 300)
+            )
+            self.game_state.particles.append(particle)
+    
+    def update(self):
+        if self.game_state.epoch % self.animation_speed == 0:
+            self.current_frame = (self.current_frame + 1) % len(self.animation_frames)
+            self.tile = self.animation_frames[self.current_frame]
+        
+        if self.game_state.epoch % 3 == 0:
+            num_particles = random.randint(1, 3)
+            
+            for _ in range(num_particles):
+                spread = 0.15
+                position = self.position + Vector2(
+                    random.uniform(-spread, spread),
+                    random.uniform(-spread, spread)
+                )
+                
+                velocity = -self.direction * 0.005
+                
+                particle = SimpleParticle(
+                    self.game_state,
+                    position,
+                    velocity,
+                    lifetime=random.randint(100, 300)
+                )
+                self.game_state.particles.append(particle)
 
 class GameStateObserver:
     def on_unit_move(self, unit, direction):
@@ -169,6 +288,16 @@ class BulletsLayer(Layer):
             if bullet.health != 0:
                 self.draw_tile(surface, bullet.position, bullet.tile)
 
+class ParticlesLayer(Layer):
+    def __init__(self, user_interface, tileset, game_state):
+        super().__init__(user_interface, tileset)
+        self.game_state = game_state
+
+    def render(self, surface):
+        # Render game_state particles directly
+        for particle in self.game_state.particles:
+            if particle.lifetime > 0:
+                self.draw_tile(surface, particle.position, particle.tile)
 class GameState:
     def __init__(self):
         self.epoch = 0
@@ -181,6 +310,7 @@ class GameState:
         ]
         self.bullet_delay = 15
         self.bullets = []
+        self.particles = []
         self.observers = []
     
     def add_observer(self, observer):
@@ -220,7 +350,8 @@ class UserInterface:
         self.window = pygame.display.set_mode((int(window_size.x), int(window_size.y)))
         self.layers = [
                     UnitsLayer(self, "assets/player_sprites.png", self.game_state, self.game_state.units),
-                    BulletsLayer(self, "assets/simple.png", self.game_state, self.game_state.bullets)
+                    BulletsLayer(self, "assets/fireball.png", self.game_state, self.game_state.bullets),
+                    ParticlesLayer(self, "assets/particle.png", self.game_state),  # Add particles layer
                 ]
         
         for layer in self.layers:
@@ -242,7 +373,7 @@ class UserInterface:
                 break  
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
-                    shoot_command = ShootCommand(self.game_state, self.player_unit, self.player_unit.orientation)
+                    shoot_command = ShootCommand(self.game_state, self.player_unit, self.player_unit.orientation, "fireball")
                     self.commands.append(shoot_command)
 
         direction = Vector2(0, 0)
@@ -256,14 +387,17 @@ class UserInterface:
         if keys[pygame.K_RIGHT]:
             direction.x += 1
                 
-        command = MoveCommand(self.game_state, self.player_unit, direction)
+        command = MoveUnitCommand(self.game_state, self.player_unit, direction)
         self.commands.append(command)
 
         for bullet in self.game_state.bullets:
             self.commands.append(MoveBulletCommand(self.game_state, bullet))
 
-        self.commands.append(DeleteDestroyedCommand(self.game_state.bullets))
-        self.commands.append(DeleteDestroyedCommand(self.game_state.units))
+        self.commands.append(UpdateParticlesCommand(self.game_state.particles))
+
+        self.commands.append(DeleteDestroyedUnitsCommand(self.game_state.bullets))
+        self.commands.append(DeleteDestroyedUnitsCommand(self.game_state.particles))
+        self.commands.append(DeleteDestroyedUnitsCommand(self.game_state.units))
                 
     def update(self):
         for command in self.commands:
